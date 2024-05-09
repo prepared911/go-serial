@@ -74,6 +74,14 @@ func (port *windowsPort) Close() error {
 	return syscall.CloseHandle(port.handle)
 }
 
+func wrapError(err error) error {
+	// We specifically ONLY want to wrap EXACTLY this error
+	if err == syscall.ERROR_OPERATION_ABORTED {
+		return &PortError{code: PortClosed, causedBy: err}
+	}
+	return err
+}
+
 func (port *windowsPort) Read(p []byte) (int, error) {
 	var readed uint32
 	ev, err := createOverlappedEvent()
@@ -83,25 +91,11 @@ func (port *windowsPort) Read(p []byte) (int, error) {
 	defer syscall.CloseHandle(ev.HEvent)
 
 	err = syscall.ReadFile(port.handle, p, &readed, ev)
-	if err == syscall.ERROR_IO_PENDING {
-		err = getOverlappedResult(port.handle, ev, &readed, true)
+	if err != nil && err != syscall.ERROR_IO_PENDING {
+		return int(readed), wrapError(err)
 	}
-	switch err {
-	case nil:
-		// operation completed successfully
-	case syscall.ERROR_OPERATION_ABORTED:
-		// port may have been closed
-		return int(readed), &PortError{code: PortClosed, causedBy: err}
-	default:
-		// error happened
-		return int(readed), err
-	}
-	if readed > 0 {
-		return int(readed), nil
-	}
-
-	// Timeout
-	return 0, nil
+	err = getOverlappedResult(port.handle, ev, &readed, true)
+	return int(readed), wrapError(err)
 }
 
 func (port *windowsPort) Write(p []byte) (int, error) {
@@ -112,10 +106,10 @@ func (port *windowsPort) Write(p []byte) (int, error) {
 	}
 	defer syscall.CloseHandle(ev.HEvent)
 	err = syscall.WriteFile(port.handle, p, &writed, ev)
-	if err == syscall.ERROR_IO_PENDING {
-		// wait for write to complete
-		err = getOverlappedResult(port.handle, ev, &writed, true)
+	if err != nil && err != syscall.ERROR_IO_PENDING {
+		return int(writed), err
 	}
+	err = getOverlappedResult(port.handle, ev, &writed, true)
 	return int(writed), err
 }
 
